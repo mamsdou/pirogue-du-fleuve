@@ -62,6 +62,8 @@ button{
   font-family:var(--display); font-weight:800; font-size:1.05rem; border:0; cursor:pointer;
   background:var(--sun); color:var(--ink); padding:12px 26px; border-radius:999px;
 }
+button.ghost{background:transparent; color:var(--sun); box-shadow:0 0 0 2px var(--sun) inset; font-size:.9rem; padding:9px 18px}
+.help{background:rgba(232,244,241,.1); border-radius:10px; padding:10px 12px; text-align:left; line-height:1.45; opacity:1}
 button:focus-visible{outline:3px solid var(--foam); outline-offset:3px}
 .hint{font-size:.78rem; opacity:.75}
 .lives{color:var(--coral); letter-spacing:2px}
@@ -92,7 +94,9 @@ button:focus-visible{outline:3px solid var(--foam); outline-offset:3px}
           <span class="dot" style="background:#4f7a3a"></span><span>Crocodile : perd une vie</span>
         </div>
         <button id="play" type="button">Jouer</button>
-        <span class="hint">Flèches ← → ou A / D · sur mobile, glisse le doigt</span>
+        <span class="hint">Flèches ← → ou A / D · sur mobile, glisse le doigt n'importe où</span>
+        <button id="install" class="ghost" type="button" hidden>Installer sur mon téléphone</button>
+        <p id="installHelp" class="hint help" hidden></p>
       </div>
     </div>
   </div>
@@ -126,10 +130,21 @@ addEventListener('keydown', e => {
   if ((e.key === ' ' || e.key === 'Enter') && state !== 'play') { e.preventDefault(); start(); }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-let touchX = null;
-cv.addEventListener('pointerdown', e => { touchX = e.offsetX; });
-cv.addEventListener('pointermove', e => { if (touchX !== null || e.pointerType === 'mouse') touchX = e.offsetX; });
-addEventListener('pointerup', () => { touchX = null; });
+// Glisser relatif : le doigt peut être n'importe où, la pirogue suit son mouvement sans être cachée.
+const DRAG = 1.3;
+let drag = null, targetX = null;
+cv.addEventListener('pointerdown', e => {
+  if (!boat) return;
+  drag = {sx: e.offsetX, bx: boat.x}; targetX = boat.x;
+  try { cv.setPointerCapture(e.pointerId); } catch(err){}
+});
+cv.addEventListener('pointermove', e => {
+  if (drag) targetX = drag.bx + (e.offsetX - drag.sx) * DRAG;
+  else if (e.pointerType === 'mouse') targetX = e.offsetX;
+});
+const endDrag = () => { drag = null; if (!matchMedia('(pointer:fine)').matches) targetX = null; };
+addEventListener('pointerup', endDrag); addEventListener('pointercancel', endDrag);
+const boatY = () => H - Math.max(140, H * 0.24);
 
 let state = 'menu', boat, things, ripples, t, score, lives, speed, spawnT, shield, hurt, last;
 
@@ -172,7 +187,11 @@ function update(dt){
   if (keys['arrowleft'] || keys['a'] || keys['q']) dir -= 1;
   if (keys['arrowright'] || keys['d']) dir += 1;
   if (dir) boat.x += dir * 320 * dt;
-  else if (touchX !== null) boat.x += (touchX - boat.x) * Math.min(1, dt*10);
+  else if (targetX !== null){
+    const c = Math.max(minX, Math.min(maxX, targetX));
+    if (drag && c !== targetX){ drag.sx += (targetX - c) / DRAG; targetX = c; }
+    boat.x += (c - boat.x) * Math.min(1, dt*16);
+  }
   boat.x = Math.max(minX, Math.min(maxX, boat.x));
 
   for (const p of ripples){ p.y += speed*dt*.8; if (p.y > H+20){ p.y = -20; p.x = Math.random()*W; } }
@@ -181,7 +200,7 @@ function update(dt){
   if (spawnT <= 0){ spawn(); spawnT = Math.max(.28, .9 - t*.012) * (0.7 + Math.random()*.6); }
 
   shield = Math.max(0, shield - dt); hurt = Math.max(0, hurt - dt);
-  const by = H - 90;
+  const by = boatY();
   for (const o of things){
     o.y += speed*dt;
     if (o.k === 'croc'){ o.x += o.vx*dt; if (o.x < 50 || o.x > W-50) o.vx *= -1; }
@@ -266,7 +285,7 @@ function draw(){
   }
   // boat
   if (boat){
-    const by = H - 90, blink = hurt > 0 && Math.floor(hurt*10)%2 === 0;
+    const by = boatY(), blink = hurt > 0 && Math.floor(hurt*10)%2 === 0;
     if (!blink){
       ctx.save(); ctx.translate(boat.x, by);
       ctx.strokeStyle = 'rgba(232,244,241,.4)'; ctx.lineWidth = 2;
@@ -296,6 +315,26 @@ function draw(){
 }
 
 document.getElementById('play').addEventListener('click', start);
+
+// Installation sur téléphone
+const installBtn = document.getElementById('install'), installHelp = document.getElementById('installHelp');
+const standalone = matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true;
+const ua = navigator.userAgent;
+const isIOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/.test(ua);
+const inApp = /FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Snapchat|TikTok|musical_ly|Line\/|; wv\)/.test(ua);
+let deferred = null;
+if (!standalone && (isIOS || isAndroid)) installBtn.hidden = false;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferred = e; if (!standalone) installBtn.hidden = false; });
+addEventListener('appinstalled', () => { installBtn.hidden = true; installHelp.hidden = false; installHelp.textContent = "C'est installé ! Le jeu est sur ton écran d'accueil."; });
+installBtn.addEventListener('click', async () => {
+  if (deferred){ deferred.prompt(); await deferred.userChoice.catch(() => {}); deferred = null; return; }
+  let html;
+  if (inApp) html = "Tu as ouvert le lien dans une application (WhatsApp, Facebook…), qui ne permet pas d'installer. Copie le lien et ouvre-le dans " + (isIOS ? '<b>Safari</b>' : '<b>Chrome</b>') + '.';
+  else if (isIOS) html = "1. Touche le bouton <b>Partager</b> (le carré avec une flèche vers le haut), en bas ou en haut de l'écran.<br>2. Fais défiler et choisis <b>« Sur l'écran d'accueil »</b>.<br>3. Touche <b>Ajouter</b>." + (/CriOS|FxiOS|EdgiOS/.test(ua) ? '<br>Si tu ne trouves pas cette option, ouvre le lien dans <b>Safari</b>.' : '');
+  else html = "1. Touche le menu <b>⋮</b> en haut à droite de Chrome.<br>2. Choisis <b>« Installer l'application »</b> ou <b>« Ajouter à l'écran d'accueil »</b>.";
+  installHelp.innerHTML = html; installHelp.hidden = false;
+});
 // idle river behind the menu
 resize(); t = 0; speed = 120; things = []; ripples = [];
 for (let i=0;i<40;i++) ripples.push({x: Math.random()*W, y: Math.random()*H, l: 8+Math.random()*22});
