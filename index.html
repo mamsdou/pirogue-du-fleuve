@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pirogue du Fleuve</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;800&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+[hidden]{display:none!important}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0}
+/* Layout: one-screen game, canvas river centered, HUD strip above, overlay card for start/game over. Single dusk-river world (deliberately one theme). */
+:root{
+  --river:#0d3b4a;
+  --deep:#08232d;
+  --bank:#c9883f;
+  --sun:#f2b134;
+  --foam:#e8f4f1;
+  --coral:#e2574c;
+  --ink:#06181e;
+  --display:"Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+  --body:"Atkinson Hyperlegible", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+html,body{height:100%}
+body{
+  background:var(--deep); color:var(--foam); font-family:var(--body);
+  display:flex; flex-direction:column; align-items:center;
+  padding-block:12px; box-sizing:border-box;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+  overflow:hidden; user-select:none; -webkit-user-select:none;
+}
+.wrap{width:100%; max-width:480px; height:100%; display:flex; flex-direction:column; gap:10px}
+.hud{display:flex; justify-content:space-between; align-items:flex-end; gap:12px}
+.brand{font-family:var(--display); font-weight:800; font-size:1.35rem; letter-spacing:-.01em; line-height:1}
+.brand small{display:block; font-family:var(--body); font-weight:400; font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--sun); margin-top:4px}
+.stats{display:flex; gap:16px; font-variant-numeric:tabular-nums}
+.stat{display:flex; flex-direction:column; align-items:flex-end}
+.stat span{font-size:.66rem; letter-spacing:.1em; text-transform:uppercase; opacity:.7}
+.stat b{font-family:var(--display); font-size:1.25rem}
+.stage{position:relative; flex:1; min-height:0; border-radius:14px; overflow:hidden; background:var(--river); box-shadow:0 0 0 3px var(--bank) inset}
+canvas{display:block; width:100%; height:100%; touch-action:none}
+.overlay{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(6,24,30,.62)}
+.card{max-width:320px; text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center}
+.card h1{font-family:var(--display); font-weight:800; font-size:2.2rem; margin:0; line-height:1; text-wrap:balance; color:var(--sun)}
+.card p{margin:0; line-height:1.45; font-size:.95rem}
+.legend{display:grid; grid-template-columns:auto 1fr; gap:6px 10px; text-align:left; font-size:.85rem; align-items:center}
+.dot{width:14px; height:14px; border-radius:50%}
+button{
+  font-family:var(--display); font-weight:800; font-size:1.05rem; border:0; cursor:pointer;
+  background:var(--sun); color:var(--ink); padding:12px 26px; border-radius:999px;
+}
+button:focus-visible{outline:3px solid var(--foam); outline-offset:3px}
+.hint{font-size:.78rem; opacity:.75}
+.lives{color:var(--coral); letter-spacing:2px}
+@media (prefers-reduced-motion: reduce){ button{transition:none} }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="hud">
+    <div class="brand">Pirogue du Fleuve<small>Descente au crépuscule</small></div>
+    <div class="stats">
+      <div class="stat"><span>Vies</span><b class="lives" id="lives">♥♥♥</b></div>
+      <div class="stat"><span>Score</span><b id="score">0</b></div>
+      <div class="stat"><span>Record</span><b id="best">0</b></div>
+    </div>
+  </div>
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="card" id="card">
+        <h1>Pirogue du Fleuve</h1>
+        <p>Guide ta pirogue sur le fleuve. Attrape les poissons, évite les rochers et les crocodiles. Le courant accélère.</p>
+        <div class="legend">
+          <span class="dot" style="background:#7fd3c4"></span><span>Poisson : +10 points</span>
+          <span class="dot" style="background:#f2b134"></span><span>Calebasse dorée : bouclier 5 s</span>
+          <span class="dot" style="background:#6b5a4a"></span><span>Rocher : perd une vie</span>
+          <span class="dot" style="background:#4f7a3a"></span><span>Crocodile : perd une vie</span>
+        </div>
+        <button id="play" type="button">Jouer</button>
+        <span class="hint">Flèches ← → ou A / D · sur mobile, glisse le doigt</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const stage = document.getElementById('stage');
+const overlay = document.getElementById('overlay'), card = document.getElementById('card');
+const elScore = document.getElementById('score'), elBest = document.getElementById('best'), elLives = document.getElementById('lives');
+const C = {river:'#0d3b4a', deep:'#08232d', bank:'#c9883f', sun:'#f2b134', foam:'#e8f4f1', coral:'#e2574c', fish:'#7fd3c4', rock:'#6b5a4a', croc:'#4f7a3a'};
+
+let W = 0, H = 0, dpr = 1;
+function resize(){
+  const r = stage.getBoundingClientRect();
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = r.width; H = r.height;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', resize);
+
+let best = 0;
+try { best = +localStorage.getItem('pirogue-best') || 0; } catch(e){}
+elBest.textContent = best;
+
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if ((e.key === ' ' || e.key === 'Enter') && state !== 'play') { e.preventDefault(); start(); }
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+let touchX = null;
+cv.addEventListener('pointerdown', e => { touchX = e.offsetX; });
+cv.addEventListener('pointermove', e => { if (touchX !== null || e.pointerType === 'mouse') touchX = e.offsetX; });
+addEventListener('pointerup', () => { touchX = null; });
+
+let state = 'menu', boat, things, ripples, t, score, lives, speed, spawnT, shield, hurt, last;
+
+function start(){
+  resize();
+  boat = {x: W/2, w: 26, h: 64};
+  things = []; ripples = [];
+  for (let i=0;i<40;i++) ripples.push({x: Math.random()*W, y: Math.random()*H, l: 8+Math.random()*22});
+  t = 0; score = 0; lives = 3; speed = 170; spawnT = 0; shield = 0; hurt = 0;
+  state = 'play'; overlay.hidden = true; updHud();
+  last = performance.now(); requestAnimationFrame(loop);
+}
+
+function updHud(){
+  elScore.textContent = score;
+  elLives.textContent = '♥'.repeat(lives) + '♡'.repeat(Math.max(0, 3-lives));
+}
+
+function spawn(){
+  const r = Math.random(), bankW = 22;
+  const x = bankW + 20 + Math.random()*(W - 2*bankW - 40);
+  if (r < .38) things.push({k:'fish', x, y:-20, r:10, ph:Math.random()*6});
+  else if (r < .70) things.push({k:'rock', x, y:-30, r:16+Math.random()*14, seed:Math.random()});
+  else if (r < .94) things.push({k:'croc', x, y:-30, r:16, vx:(Math.random()<.5?-1:1)*(40+Math.random()*50)});
+  else things.push({k:'gourd', x, y:-20, r:12});
+}
+
+function loop(now){
+  if (state !== 'play') return;
+  const dt = Math.min((now - last)/1000, .05); last = now;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+
+function update(dt){
+  t += dt;
+  speed = 170 + t*6;
+  const bankW = 22, minX = bankW + boat.w/2 + 4, maxX = W - bankW - boat.w/2 - 4;
+  let dir = 0;
+  if (keys['arrowleft'] || keys['a'] || keys['q']) dir -= 1;
+  if (keys['arrowright'] || keys['d']) dir += 1;
+  if (dir) boat.x += dir * 320 * dt;
+  else if (touchX !== null) boat.x += (touchX - boat.x) * Math.min(1, dt*10);
+  boat.x = Math.max(minX, Math.min(maxX, boat.x));
+
+  for (const p of ripples){ p.y += speed*dt*.8; if (p.y > H+20){ p.y = -20; p.x = Math.random()*W; } }
+
+  spawnT -= dt;
+  if (spawnT <= 0){ spawn(); spawnT = Math.max(.28, .9 - t*.012) * (0.7 + Math.random()*.6); }
+
+  shield = Math.max(0, shield - dt); hurt = Math.max(0, hurt - dt);
+  const by = H - 90;
+  for (const o of things){
+    o.y += speed*dt;
+    if (o.k === 'croc'){ o.x += o.vx*dt; if (o.x < 50 || o.x > W-50) o.vx *= -1; }
+    if (o.dead) continue;
+    const dx = Math.abs(o.x - boat.x), dy = Math.abs(o.y - by);
+    if (dx < o.r + boat.w/2 - 4 && dy < o.r + boat.h/2 - 6){
+      if (o.k === 'fish'){ score += 10; o.dead = true; pop(o.x,o.y,C.fish,'+10'); }
+      else if (o.k === 'gourd'){ shield = 5; o.dead = true; pop(o.x,o.y,C.sun,'Bouclier'); }
+      else if (shield > 0){ o.dead = true; score += 5; pop(o.x,o.y,C.sun,'+5'); }
+      else if (hurt <= 0){ lives--; hurt = 1.2; o.dead = true; pop(o.x,o.y,C.coral,'Aïe'); if (lives <= 0) return gameOver(); }
+    }
+  }
+  things = things.filter(o => o.y < H + 60 && !(o.dead && o.k !== 'fx'));
+  for (const f of fx){ f.y -= 40*dt; f.a -= dt; }
+  fx = fx.filter(f => f.a > 0);
+  score += 0; // distance bonus below
+  distAcc += speed*dt; if (distAcc > 400){ distAcc -= 400; score += 1; }
+  updHud();
+}
+let fx = [], distAcc = 0;
+function pop(x,y,col,txt){ fx.push({x,y,col,txt,a:1}); }
+
+function gameOver(){
+  state = 'over'; draw();
+  const newBest = score > best;
+  if (newBest){ best = score; try { localStorage.setItem('pirogue-best', best); } catch(e){} elBest.textContent = best; }
+  card.innerHTML = `<h1>${newBest ? 'Nouveau record !' : 'Chavirée !'}</h1>
+    <p>Tu as parcouru le fleuve pendant ${Math.round(t)} secondes et marqué <b>${score}</b> points.</p>
+    <p class="hint">Record : ${best}</p>
+    <button id="play" type="button">Rejouer</button>`;
+  overlay.hidden = false;
+  document.getElementById('play').addEventListener('click', start);
+  document.getElementById('play').focus();
+}
+
+function draw(){
+  ctx.fillStyle = C.river; ctx.fillRect(0,0,W,H);
+  // deep channel
+  const g = ctx.createLinearGradient(0,0,W,0);
+  g.addColorStop(0,'rgba(8,35,45,0)'); g.addColorStop(.5,'rgba(8,35,45,.55)'); g.addColorStop(1,'rgba(8,35,45,0)');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // ripples
+  ctx.strokeStyle = 'rgba(232,244,241,.13)'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  for (const p of ripples){ ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y+p.l); ctx.stroke(); }
+  // banks
+  const off = (t*speed) % 40;
+  ctx.fillStyle = C.bank;
+  for (const side of [0,1]){
+    ctx.beginPath();
+    const bx = side ? W : 0, s = side ? -1 : 1;
+    ctx.moveTo(bx, -40);
+    for (let y=-40; y<=H+40; y+=20){ const k = Math.sin((y - off)*.08 + side*2)*6; ctx.lineTo(bx + s*(22+k), y); }
+    ctx.lineTo(bx, H+40); ctx.closePath(); ctx.fill();
+  }
+  // things
+  for (const o of things){
+    if (o.k === 'fish'){
+      const wig = Math.sin(t*10 + o.ph)*3;
+      ctx.fillStyle = C.fish;
+      ctx.beginPath(); ctx.ellipse(o.x, o.y, 6, 11, 0, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(o.x, o.y-9); ctx.lineTo(o.x-6+wig, o.y-18); ctx.lineTo(o.x+6+wig, o.y-18); ctx.closePath(); ctx.fill();
+    } else if (o.k === 'rock'){
+      ctx.fillStyle = C.rock; ctx.beginPath();
+      for (let i=0;i<7;i++){ const a = i/7*Math.PI*2, rr = o.r*(.8+.25*Math.sin(o.seed*20+i*2.3)); ctx.lineTo(o.x+Math.cos(a)*rr, o.y+Math.sin(a)*rr); }
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(232,244,241,.35)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(o.x, o.y+4, o.r+5, .2, Math.PI-.2); ctx.stroke();
+    } else if (o.k === 'croc'){
+      const f = o.vx > 0 ? 1 : -1;
+      ctx.fillStyle = C.croc;
+      ctx.beginPath(); ctx.ellipse(o.x, o.y, 26, 9, 0, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(o.x+f*22, o.y-6); ctx.lineTo(o.x+f*40, o.y-2); ctx.lineTo(o.x+f*40, o.y+3); ctx.lineTo(o.x+f*22, o.y+6); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(o.x-f*22, o.y-4); ctx.lineTo(o.x-f*44, o.y+Math.sin(t*8)*4); ctx.lineTo(o.x-f*22, o.y+4); ctx.fill();
+      ctx.fillStyle = C.sun; ctx.beginPath(); ctx.arc(o.x+f*18, o.y-5, 2.5, 0, Math.PI*2); ctx.fill();
+    } else if (o.k === 'gourd'){
+      ctx.fillStyle = C.sun;
+      ctx.beginPath(); ctx.arc(o.x, o.y+3, 11, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(o.x, o.y-9, 6, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(242,177,52,.4)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(o.x, o.y, 18 + Math.sin(t*6)*3, 0, Math.PI*2); ctx.stroke();
+    }
+  }
+  // boat
+  if (boat){
+    const by = H - 90, blink = hurt > 0 && Math.floor(hurt*10)%2 === 0;
+    if (!blink){
+      ctx.save(); ctx.translate(boat.x, by);
+      ctx.strokeStyle = 'rgba(232,244,241,.4)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-boat.w/2, boat.h/2); ctx.lineTo(-boat.w, boat.h/2+24); ctx.moveTo(boat.w/2, boat.h/2); ctx.lineTo(boat.w, boat.h/2+24); ctx.stroke();
+      // hull with painted bands
+      ctx.fillStyle = '#d9462f';
+      ctx.beginPath(); ctx.moveTo(0,-boat.h/2); ctx.quadraticCurveTo(boat.w/2+4, 0, boat.w/2-2, boat.h/2); ctx.lineTo(-boat.w/2+2, boat.h/2); ctx.quadraticCurveTo(-boat.w/2-4, 0, 0, -boat.h/2); ctx.fill();
+      ctx.fillStyle = C.sun; ctx.fillRect(-boat.w/2+3, -8, boat.w-6, 5);
+      ctx.fillStyle = '#2a7a5c'; ctx.fillRect(-boat.w/2+3, 4, boat.w-6, 5);
+      ctx.fillStyle = C.foam; ctx.beginPath(); ctx.arc(0, -18, 4, 0, Math.PI*2); ctx.fill();
+      // paddler
+      ctx.fillStyle = '#3b2416'; ctx.beginPath(); ctx.arc(0, 18, 7, 0, Math.PI*2); ctx.fill();
+      const pa = Math.sin(t*6)*.5;
+      ctx.strokeStyle = '#8a5a2b'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-20*Math.cos(pa), 18-20*Math.sin(pa)); ctx.lineTo(20*Math.cos(pa), 18+20*Math.sin(pa)); ctx.stroke();
+      ctx.restore();
+    }
+    if (shield > 0){
+      ctx.strokeStyle = `rgba(242,177,52,${.4 + .3*Math.sin(t*12)})`; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(boat.x, by, 28, 44, 0, 0, Math.PI*2); ctx.stroke();
+    }
+  }
+  // floating text
+  ctx.font = '800 16px "Bricolage Grotesque", system-ui, sans-serif'; ctx.textAlign = 'center';
+  for (const f of fx){ ctx.globalAlpha = Math.max(0,f.a); ctx.fillStyle = f.col; ctx.fillText(f.txt, f.x, f.y); }
+  ctx.globalAlpha = 1;
+}
+
+document.getElementById('play').addEventListener('click', start);
+// idle river behind the menu
+resize(); t = 0; speed = 120; things = []; ripples = [];
+for (let i=0;i<40;i++) ripples.push({x: Math.random()*W, y: Math.random()*H, l: 8+Math.random()*22});
+(function idle(now){
+  if (state !== 'menu') return;
+  t += 1/60; for (const p of ripples){ p.y += 1.6; if (p.y > H+20){ p.y = -20; p.x = Math.random()*W; } }
+  draw(); requestAnimationFrame(idle);
+})();
+})();
+</script>
+</body>
+</html>
